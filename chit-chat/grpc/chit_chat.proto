@@ -5,12 +5,12 @@ option go_package = "/pb";
 
 // ------ Server service -------
 
-service ServerService {
-  rpc Join (joinRequest) returns (stream ServerReply);
+service sService {
+  rpc Join (JoinRequest) returns (stream ServerReply);
   rpc Leave (LeaveRequest) returns (stream ServerReply);
 }
 
-message joinRequest
+message JoinRequest
 {
     int32 client_id = 1;
     VectorClock vec_clock = 2;
