@@ -34,13 +34,12 @@ func (s *serverService) Inc_clock() {
 }
 
 func (s *serverService) Join(req *pb.JoinRequest, stream pb.SService_JoinServer) error {
-
+	s.Inc_clock()
 	clientID := req.ClientId
 
 	s.mu.Lock()
 	s.clients[clientID] = stream
 	s.clock[clientID] = 0
-	s.Inc_clock()
 	s.mu.Unlock()
 
 	msg := fmt.Sprintf("CLIENT-%d joined chit-chat", clientID)
@@ -53,6 +52,7 @@ func (s *serverService) Join(req *pb.JoinRequest, stream pb.SService_JoinServer)
 }
 
 func (s *serverService) Leave(req *pb.LeaveRequest, stream pb.SService_LeaveServer) error {
+	s.Inc_clock()
 	clientID := req.ClientId
 
 	s.mu.Lock()
@@ -77,6 +77,7 @@ func (s *serverService) Leave(req *pb.LeaveRequest, stream pb.SService_LeaveServ
 }
 
 func (s *serverService) Message(req *pb.SendMessage, stream pb.SService_MessageServer) error {
+	s.Inc_clock()
 	clientID := req.ClientId
 	msg := req.Message
 
@@ -94,10 +95,6 @@ func (s *serverService) Message(req *pb.SendMessage, stream pb.SService_MessageS
 	}, 0)
 
 	<-stream.Context().Done()
-
-	s.mu.Lock()
-	delete(s.clients, clientID)
-	s.mu.Unlock()
 
 	return nil
 }
