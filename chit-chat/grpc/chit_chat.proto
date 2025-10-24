@@ -8,6 +8,7 @@ option go_package = "/pb";
 service sService {
   rpc Join (JoinRequest) returns (stream ServerReply);
   rpc Leave (LeaveRequest) returns (stream ServerReply);
+  rpc Message(SendMessage) returns (stream ServerReply);
 }
 
 message JoinRequest
@@ -20,6 +21,13 @@ message LeaveRequest
 {
     int32 client_id = 1;
     VectorClock vec_clock = 2;
+}
+
+message SendMessage
+{
+    int32 client_id = 1;
+    VectorClock vec_clock = 2;
+    string message = 3;
 }
 
 message ServerReply

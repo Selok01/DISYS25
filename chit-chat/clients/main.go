@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"time"
+	random "math/rand"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -12,6 +13,21 @@ import (
 	pb "chit-chat/grpc/pb"
 	"chit-chat/server/utils"
 )
+
+func createMessage(abcd string, maxSize int) string {
+	var ind int
+	var message string
+	addrAbcd := []rune(abcd)
+
+	// max size of messages is set to 64 for shorter log messages
+	for range maxSize/2 {
+		ind = random.Intn(len(addrAbcd))
+		message += string(addrAbcd[ind])
+	} 
+
+	return message
+}
+
 
 func main() {
 	conn, err := grpc.NewClient("localhost:8080", grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -37,6 +53,20 @@ func main() {
 
 	utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.JOIN, "Joined chit-chat")
 
+	abcd := "abcdefghijklmnopqrstovwxyz"
+	clientMsg := createMessage(abcd, 128)
+	msgReq := &pb.SendMessage{
+		ClientId: clientID,
+		Message: clientMsg,
+	} 
+
+	msgStream, err := client.Message(context.Background(), msgReq)
+	if err != nil {
+		msg := fmt.Sprintf("Failed to send message: %v", err)
+		utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, msg)
+	}
+	defer msgStream.CloseSend()
+
 	go func() {
 		for {
 			reply, err := stream.Recv()
@@ -49,12 +79,12 @@ func main() {
 				utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, msg)
 				return
 			}
-			msg := fmt.Sprintf("Message is: \"%s\"", reply.Ack)
+			msg := fmt.Sprintf("\"%s\"", reply.Ack)
 			utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.MESSAGE_RECEIVED, msg)
 		}
 	}()
 
-	time.Sleep(5 * time.Second)
+	time.Sleep(30 * time.Second)
 
 	leaveReq := &pb.LeaveRequest{
 		ClientId: clientID,

@@ -76,6 +76,33 @@ func (s *serverService) Leave(req *pb.LeaveRequest, stream pb.SService_LeaveServ
 	return nil
 }
 
+func (s *serverService) Message(req *pb.SendMessage, stream pb.SService_MessageServer) error {
+	clientID := req.ClientId
+	msg := req.Message
+
+	s.mu.Lock()
+	s.clients[clientID] = stream
+	s.mu.Unlock()
+
+	
+	clientMessage := fmt.Sprintf("CLIENT-%d messaged: \"%s\"", clientID, msg)
+	utils.LogMessage(-1, -1, utils.SERVER, utils.LEAVE, clientMessage)
+
+	s.broadcast(&pb.ServerReply{
+		Ack:      clientMessage,
+		VecClock: req.VecClock,
+	}, 0)
+
+	<-stream.Context().Done()
+
+	s.mu.Lock()
+	delete(s.clients, clientID)
+	s.mu.Unlock()
+
+	return nil
+}
+
+
 func (s *serverService) broadcast(reply *pb.ServerReply, excludeID int32) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -97,7 +124,7 @@ func (s *serverService) broadcast(reply *pb.ServerReply, excludeID int32) {
 		utils.LogMessage(-1, -1, utils.SERVER, utils.BROADCAST, msg)
 	}
 
-	msg := fmt.Sprintf("Message is: \"%s\"", reply.Ack)
+	msg := fmt.Sprintf("\"%s\"", reply.Ack)
 	utils.LogMessage(-1, -1, utils.SERVER, utils.BROADCAST, msg)
 }
 
