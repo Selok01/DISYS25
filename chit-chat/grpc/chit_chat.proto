@@ -38,5 +38,5 @@ message ServerReply
 
 message VectorClock
 {
-    map<int32, int32> clock = 1;
+    repeated int32 clock = 1;
 }

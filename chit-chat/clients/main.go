@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"time"
 	random "math/rand"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -20,14 +20,36 @@ func createMessage(abcd string, maxSize int) string {
 	addrAbcd := []rune(abcd)
 
 	// max size of messages is set to 64 for shorter log messages
-	for range maxSize/2 {
+	for range maxSize / 2 {
 		ind = random.Intn(len(addrAbcd))
 		message += string(addrAbcd[ind])
-	} 
+	}
 
 	return message
 }
 
+func compare_clock(vec1, vec2 []int32) []int32 {
+
+	if len(vec1) != len(vec2) {
+		panic("cant compare vector clocks of different length")
+	}
+
+	merged := make([]int32, 1000)
+
+	for i := range len(vec1) {
+		if vec1[i] > vec2[i] {
+			merged[i] = vec1[i]
+		} else {
+			merged[i] = vec2[i]
+		}
+	}
+
+	return merged
+}
+
+func Inc_clock(s []int32, clientid int) {
+	s[clientid]++
+}
 
 func main() {
 	conn, err := grpc.NewClient("localhost:8080", grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -41,9 +63,19 @@ func main() {
 
 	clientID := int32(time.Now().Unix() % 1000)
 
+	clientClock := make([]int32, 1000)
+
+	vc := &pb.VectorClock{
+		Clock: clientClock,
+	}
+
 	joinReq := &pb.JoinRequest{
 		ClientId: clientID,
+		VecClock: vc,
 	}
+
+	Inc_clock(clientClock, int(clientID))
+	utils.LogMessage(int(clientID), int(clientClock[clientID]), utils.CLIENT, utils.JOIN, "Joined chit-chat")
 
 	stream, err := client.Join(context.Background(), joinReq)
 	if err != nil {
@@ -51,15 +83,15 @@ func main() {
 		utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, msg)
 	}
 
-	utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.JOIN, "Joined chit-chat")
-
 	abcd := "abcdefghijklmnopqrstovwxyz"
 	clientMsg := createMessage(abcd, 128)
 	msgReq := &pb.SendMessage{
 		ClientId: clientID,
-		Message: clientMsg,
-	} 
+		Message:  clientMsg,
+		VecClock: vc,
+	}
 
+	Inc_clock(clientClock, int(clientID))
 	msgStream, err := client.Message(context.Background(), msgReq)
 	if err != nil {
 		msg := fmt.Sprintf("Failed to send message: %v", err)
@@ -79,8 +111,10 @@ func main() {
 				utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, msg)
 				return
 			}
+			clientClock = compare_clock(reply.VecClock.Clock, clientClock)
 			msg := fmt.Sprintf("\"%s\"", reply.Ack)
-			utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.MESSAGE_RECEIVED, msg)
+			Inc_clock(clientClock, int(clientID))
+			utils.LogMessage(int(clientID), int(clientClock[clientID]), utils.CLIENT, utils.MESSAGE_RECEIVED, msg)
 		}
 	}()
 
@@ -88,8 +122,11 @@ func main() {
 
 	leaveReq := &pb.LeaveRequest{
 		ClientId: clientID,
+		VecClock: vc,
 	}
 
+	clientClock = compare_clock(vc.Clock, clientClock)
+	Inc_clock(clientClock, int(clientID))
 	leaveStream, err := client.Leave(context.Background(), leaveReq)
 	if err != nil {
 		msg := fmt.Sprintf("Leave failed: %v", err)
