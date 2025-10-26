@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -16,15 +17,16 @@ import (
 )
 
 type serverService struct {
-	pb.UnimplementedSServiceServer
+	pb.UnimplementedChatServiceServer
+
 	mu      sync.Mutex
-	clients map[int32]pb.SService_JoinServer
+	clients map[int32]pb.ChatService_ChatServer
 	clock   []int32
 }
 
 func NewServer() *serverService {
 	return &serverService{
-		clients: make(map[int32]pb.SService_JoinServer),
+		clients: make(map[int32]pb.ChatService_ChatServer),
 		clock:   make([]int32, 1000),
 	}
 }
@@ -52,7 +54,47 @@ func compare_clock(vec1, vec2 []int32) []int32 {
 	return merged
 }
 
-func (s *serverService) Join(req *pb.JoinRequest, stream pb.SService_JoinServer) error {
+func (s *serverService) Chat(stream pb.ChatService_ChatServer) error {
+	var clientID int32
+
+	for {
+		req, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if clientID != 0 {
+				s.mu.Lock()
+				delete(s.clients, clientID)
+				s.mu.Unlock()
+			}
+			return err
+		}
+
+		switch payload := req.Payload.(type) {
+		case *pb.ClientRequest_Join:
+			clientID = payload.Join.ClientId
+			s.Join(payload.Join, stream)
+
+		case *pb.ClientRequest_Message:
+			s.Message(payload.Message, stream)
+
+		case *pb.ClientRequest_Leave:
+			s.Leave(payload.Leave, stream)
+			return nil
+		}
+	}
+
+	if clientID != 0 {
+		s.mu.Lock()
+		delete(s.clients, clientID)
+		s.mu.Unlock()
+	}
+
+	return nil
+}
+
+func (s *serverService) Join(req *pb.JoinRequest, stream pb.ChatService_ChatServer) error {
 	clientID := req.ClientId
 	clientClock := req.VecClock.Clock
 
@@ -74,11 +116,10 @@ func (s *serverService) Join(req *pb.JoinRequest, stream pb.SService_JoinServer)
 		VecClock: vc,
 	}, 0)
 
-	<-stream.Context().Done()
 	return nil
 }
 
-func (s *serverService) Leave(req *pb.LeaveRequest, stream pb.SService_LeaveServer) error {
+func (s *serverService) Leave(req *pb.LeaveRequest, stream pb.ChatService_ChatServer) error {
 	clientID := req.ClientId
 	clientClock := req.VecClock.Clock
 
@@ -109,7 +150,7 @@ func (s *serverService) Leave(req *pb.LeaveRequest, stream pb.SService_LeaveServ
 	return nil
 }
 
-func (s *serverService) Message(req *pb.SendMessage, stream pb.SService_MessageServer) error {
+func (s *serverService) Message(req *pb.SendMessage, stream pb.ChatService_ChatServer) error {
 	clientID := req.ClientId
 	msg := req.Message
 	clientClock := req.VecClock.Clock
@@ -132,25 +173,32 @@ func (s *serverService) Message(req *pb.SendMessage, stream pb.SService_MessageS
 		VecClock: vc,
 	}, 0)
 
-	<-stream.Context().Done()
-
 	return nil
 }
 
 func (s *serverService) broadcast(reply *pb.ServerReply, excludeID int32) {
+	// Copy clients under lock to avoid holding the mutex while sending
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	clientsCopy := make(map[int32]pb.ChatService_ChatServer, len(s.clients))
+	for id, stream := range s.clients {
+		clientsCopy[id] = stream
+	}
+	s.mu.Unlock()
 
-	for id, clientStream := range s.clients {
+	for id, clientStream := range clientsCopy {
 		if excludeID != 0 && id == excludeID {
 			continue
 		}
 
-		err := clientStream.SendMsg(reply)
-		if err != nil {
+		if err := clientStream.Send(reply); err != nil {
 			msg := fmt.Sprintf("Broadcast failed for CLIENT-%d: %v", id, err)
 			utils.LogMessage(-1, int(reply.VecClock.Clock[0]), utils.SERVER, utils.ERROR, msg)
+
+			// Remove the broken client safely
+			s.mu.Lock()
 			delete(s.clients, id)
+			s.mu.Unlock()
+
 			continue
 		}
 
@@ -171,7 +219,7 @@ func main() {
 
 	grpcServer := grpc.NewServer()
 	server := NewServer()
-	pb.RegisterSServiceServer(grpcServer, server)
+	pb.RegisterChatServiceServer(grpcServer, server)
 
 	log.Println("Server started, now listening on :8080")
 

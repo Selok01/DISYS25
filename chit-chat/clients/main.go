@@ -59,7 +59,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	client := pb.NewSServiceClient(conn)
+	client := pb.NewChatServiceClient(conn)
 
 	clientID := int32(time.Now().Unix() % 1000)
 
@@ -69,70 +69,83 @@ func main() {
 		Clock: clientClock,
 	}
 
-	joinReq := &pb.JoinRequest{
-		ClientId: clientID,
-		VecClock: vc,
-	}
-
 	Inc_clock(clientClock, int(clientID))
 	utils.LogMessage(int(clientID), int(clientClock[clientID]), utils.CLIENT, utils.JOIN, "Joined chit-chat")
 
-	stream, err := client.Join(context.Background(), joinReq)
+	stream, err := client.Chat(context.Background())
 	if err != nil {
 		msg := fmt.Sprintf("Failed to connect: %v", err)
 		utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, msg)
+		return
 	}
 
-	abcd := "abcdefghijklmnopqrstovwxyz"
-	clientMsg := createMessage(abcd, 128)
-	msgReq := &pb.SendMessage{
-		ClientId: clientID,
-		Message:  clientMsg,
-		VecClock: vc,
+	joinReq := &pb.ClientRequest{
+		Payload: &pb.ClientRequest_Join{
+			Join: &pb.JoinRequest{
+				ClientId: clientID,
+				VecClock: vc,
+			},
+		},
 	}
-
 	Inc_clock(clientClock, int(clientID))
-	msgStream, err := client.Message(context.Background(), msgReq)
-	if err != nil {
-		msg := fmt.Sprintf("Failed to send message: %v", err)
-		utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, msg)
+	utils.LogMessage(int(clientID), int(clientClock[clientID]), utils.CLIENT, utils.JOIN, "Joined chit-chat")
+	if err := stream.Send(joinReq); err != nil {
+		utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, fmt.Sprintf("Failed to send join: %v", err))
+		return
 	}
-	defer msgStream.CloseSend()
 
+	// ----- Receive messages in background -----
 	go func() {
 		for {
 			reply, err := stream.Recv()
 			if err == io.EOF {
-				utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.STREAM_END, " Server closed stream")
+				utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.STREAM_END, "Server closed stream")
 				return
 			}
 			if err != nil {
-				msg := fmt.Sprintf("Stream receive error: %v", err)
-				utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, msg)
+				utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, fmt.Sprintf("Stream receive error: %v", err))
 				return
 			}
+
 			clientClock = compare_clock(reply.VecClock.Clock, clientClock)
-			msg := fmt.Sprintf("\"%s\"", reply.Ack)
 			Inc_clock(clientClock, int(clientID))
-			utils.LogMessage(int(clientID), int(clientClock[clientID]), utils.CLIENT, utils.MESSAGE_RECEIVED, msg)
+			utils.LogMessage(int(clientID), int(clientClock[clientID]), utils.CLIENT, utils.MESSAGE_RECEIVED, fmt.Sprintf("\"%s\"", reply.Ack))
 		}
 	}()
 
+	// ----- Send message -----
+	abcd := "abcdefghijklmnopqrstovwxyz"
+	clientMsg := createMessage(abcd, 128)
+	msgReq := &pb.ClientRequest{
+		Payload: &pb.ClientRequest_Message{
+			Message: &pb.SendMessage{
+				ClientId: clientID,
+				Message:  clientMsg,
+				VecClock: vc,
+			},
+		},
+	}
+	Inc_clock(clientClock, int(clientID))
+	if err := stream.Send(msgReq); err != nil {
+		utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, fmt.Sprintf("Failed to send message: %v", err))
+	}
+
+	// ----- Sleep to simulate work -----
 	time.Sleep(30 * time.Second)
 
-	leaveReq := &pb.LeaveRequest{
-		ClientId: clientID,
-		VecClock: vc,
+	// ----- Send Leave -----
+	leaveReq := &pb.ClientRequest{
+		Payload: &pb.ClientRequest_Leave{
+			Leave: &pb.LeaveRequest{
+				ClientId: clientID,
+				VecClock: vc,
+			},
+		},
 	}
-
-	clientClock = compare_clock(vc.Clock, clientClock)
 	Inc_clock(clientClock, int(clientID))
-	leaveStream, err := client.Leave(context.Background(), leaveReq)
-	if err != nil {
-		msg := fmt.Sprintf("Leave failed: %v", err)
-		utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, msg)
+	if err := stream.Send(leaveReq); err != nil {
+		utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, fmt.Sprintf("Failed to send leave: %v", err))
 	}
-	defer leaveStream.CloseSend()
 
 	utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.LEAVE, "Leaving chit-chat")
 	time.Sleep(1 * time.Second)

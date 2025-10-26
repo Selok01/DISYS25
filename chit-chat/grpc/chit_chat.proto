@@ -3,40 +3,43 @@ syntax = "proto3";
 option go_package = "/pb";
 
 
-// ------ Server service -------
-
-service sService {
-  rpc Join (JoinRequest) returns (stream ServerReply);
-  rpc Leave (LeaveRequest) returns (stream ServerReply);
-  rpc Message(SendMessage) returns (stream ServerReply);
+// Server
+service ChatService {
+  rpc Chat(stream ClientRequest) returns (stream ServerReply);
 }
 
-message JoinRequest
-{
-    int32 client_id = 1;
-    VectorClock vec_clock = 2;
+// ----------- Client → Server messages -----------
+message ClientRequest {
+  oneof payload {
+    JoinRequest join = 1;
+    LeaveRequest leave = 2;
+    SendMessage message = 3;
+  }
 }
 
-message LeaveRequest
-{
-    int32 client_id = 1;
-    VectorClock vec_clock = 2;
+message JoinRequest {
+  int32 client_id = 1;
+  VectorClock vec_clock = 2;
 }
 
-message SendMessage
-{
-    int32 client_id = 1;
-    VectorClock vec_clock = 2;
-    string message = 3;
+message LeaveRequest {
+  int32 client_id = 1;
+  VectorClock vec_clock = 2;
 }
 
-message ServerReply
-{
-   string ack = 1;
-   VectorClock vec_clock = 2;
+message SendMessage {
+  int32 client_id = 1;
+  VectorClock vec_clock = 2;
+  string message = 3;
 }
 
-message VectorClock
-{
-    repeated int32 clock = 1;
+// ----------- Server → Client messages -----------
+message ServerReply {
+  string ack = 1;
+  VectorClock vec_clock = 2;
+}
+
+// ----------- Shared types -----------
+message VectorClock {
+  repeated int32 clock = 1;
 }
