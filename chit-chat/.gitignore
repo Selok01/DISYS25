@@ -1,1 +1,3 @@
 /grpc/**/pb
+/server/server.log
+/clients/*.log

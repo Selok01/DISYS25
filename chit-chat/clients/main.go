@@ -14,9 +14,11 @@ import (
 	"chit-chat/server/utils"
 )
 
-func createMessage(abcd string, maxSize int) string {
+func createMessage(maxSize int) string {
 	var ind int
 	var message string
+	
+	abcd := "abcdefghijklmnopqrstovwxyz"
 	addrAbcd := []rune(abcd)
 
 	// max size of messages is set to 64 for shorter log messages
@@ -26,29 +28,6 @@ func createMessage(abcd string, maxSize int) string {
 	}
 
 	return message
-}
-
-func compare_clock(vec1, vec2 []int32) []int32 {
-
-	if len(vec1) != len(vec2) {
-		panic("cant compare vector clocks of different length")
-	}
-
-	merged := make([]int32, 1000)
-
-	for i := range len(vec1) {
-		if vec1[i] > vec2[i] {
-			merged[i] = vec1[i]
-		} else {
-			merged[i] = vec2[i]
-		}
-	}
-
-	return merged
-}
-
-func Inc_clock(s []int32, clientid int) {
-	s[clientid]++
 }
 
 func main() {
@@ -69,16 +48,14 @@ func main() {
 		Clock: clientClock,
 	}
 
-	Inc_clock(clientClock, int(clientID))
-	utils.LogMessage(int(clientID), int(clientClock[clientID]), utils.CLIENT, utils.JOIN, "Joined chit-chat")
-
 	stream, err := client.Chat(context.Background())
 	if err != nil {
 		msg := fmt.Sprintf("Failed to connect: %v", err)
-		utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, msg)
+		utils.LogMessage(clientID, clientClock[clientID], utils.CLIENT, utils.ERROR, msg)
 		return
 	}
 
+	// ----- Send Join -----
 	joinReq := &pb.ClientRequest{
 		Payload: &pb.ClientRequest_Join{
 			Join: &pb.JoinRequest{
@@ -87,10 +64,12 @@ func main() {
 			},
 		},
 	}
-	Inc_clock(clientClock, int(clientID))
-	utils.LogMessage(int(clientID), int(clientClock[clientID]), utils.CLIENT, utils.JOIN, "Joined chit-chat")
+
+	utils.IncreaseClock(clientClock, clientID)
+	msg := fmt.Sprintf("Participant %d joined chit-chat at logical time %v", clientID, clientClock[clientID])
+	utils.LogMessage(clientID, clientClock[clientID], utils.CLIENT, utils.JOIN, msg)
 	if err := stream.Send(joinReq); err != nil {
-		utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, fmt.Sprintf("Failed to send join: %v", err))
+		utils.LogMessage(clientID, clientClock[clientID], utils.CLIENT, utils.ERROR, fmt.Sprintf("Failed to send join: %v", err))
 		return
 	}
 
@@ -99,23 +78,23 @@ func main() {
 		for {
 			reply, err := stream.Recv()
 			if err == io.EOF {
-				utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.STREAM_END, "Server closed stream")
+				utils.LogMessage(clientID, clientClock[clientID], utils.CLIENT, utils.STREAM_END, "Server closed stream")
 				return
 			}
 			if err != nil {
-				utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, fmt.Sprintf("Stream receive error: %v", err))
+				utils.LogMessage(clientID, clientClock[clientID], utils.CLIENT, utils.ERROR, fmt.Sprintf("Stream receive error: %v", err))
 				return
 			}
 
-			clientClock = compare_clock(reply.VecClock.Clock, clientClock)
-			Inc_clock(clientClock, int(clientID))
-			utils.LogMessage(int(clientID), int(clientClock[clientID]), utils.CLIENT, utils.MESSAGE_RECEIVED, fmt.Sprintf("\"%s\"", reply.Ack))
+			clientClock = utils.CompareClocks(reply.VecClock.Clock, clientClock)
+			utils.IncreaseClock(clientClock, clientID)
+			utils.LogMessage(clientID, clientClock[clientID], utils.CLIENT, utils.MESSAGE_RECEIVED, fmt.Sprintf("\"%s\"", reply.Ack))
 		}
 	}()
 
 	// ----- Send message -----
-	abcd := "abcdefghijklmnopqrstovwxyz"
-	clientMsg := createMessage(abcd, 128)
+	time.Sleep(2 * time.Second)
+	clientMsg := createMessage(128)
 	msgReq := &pb.ClientRequest{
 		Payload: &pb.ClientRequest_Message{
 			Message: &pb.SendMessage{
@@ -125,13 +104,13 @@ func main() {
 			},
 		},
 	}
-	Inc_clock(clientClock, int(clientID))
+	utils.IncreaseClock(clientClock, clientID)
 	if err := stream.Send(msgReq); err != nil {
-		utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, fmt.Sprintf("Failed to send message: %v", err))
+		utils.LogMessage(clientID, clientClock[clientID], utils.CLIENT, utils.ERROR, fmt.Sprintf("Failed to send message: %v", err))
 	}
 
 	// ----- Sleep to simulate work -----
-	time.Sleep(30 * time.Second)
+	time.Sleep(10 * time.Second)
 
 	// ----- Send Leave -----
 	leaveReq := &pb.ClientRequest{
@@ -142,13 +121,14 @@ func main() {
 			},
 		},
 	}
-	Inc_clock(clientClock, int(clientID))
+	
+	utils.IncreaseClock(clientClock, clientID)
 	if err := stream.Send(leaveReq); err != nil {
-		utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.ERROR, fmt.Sprintf("Failed to send leave: %v", err))
+		utils.LogMessage(clientID, clientClock[clientID], utils.CLIENT, utils.ERROR, fmt.Sprintf("Failed to send leave: %v", err))
 	}
 
-	utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.LEAVE, "Leaving chit-chat")
+	utils.LogMessage(clientID, clientClock[clientID], utils.CLIENT, utils.LEAVE, "Leaving chit-chat")
 	time.Sleep(1 * time.Second)
 
-	utils.LogMessage(int(clientID), -1, utils.CLIENT, utils.SHUTDOWN, "Client exiting cleanly")
+	utils.LogMessage(clientID, clientClock[clientID], utils.CLIENT, utils.SHUTDOWN, "Client exited cleanly")
 }

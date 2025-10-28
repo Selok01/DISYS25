@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"os"
 	"os/signal"
@@ -16,45 +17,21 @@ import (
 	"chit-chat/server/utils"
 )
 
-type serverService struct {
+type chatService struct {
 	pb.UnimplementedChatServiceServer
-
 	mu      sync.Mutex
 	clients map[int32]pb.ChatService_ChatServer
 	clock   []int32
 }
 
-func NewServer() *serverService {
-	return &serverService{
+func NewServer() *chatService {
+	return &chatService{
 		clients: make(map[int32]pb.ChatService_ChatServer),
 		clock:   make([]int32, 1000),
 	}
 }
 
-func (s *serverService) Inc_clock() {
-	s.clock[0]++
-}
-
-func compare_clock(vec1, vec2 []int32) []int32 {
-
-	if len(vec1) != len(vec2) {
-		panic("cant compare vector clocks of different length")
-	}
-
-	merged := make([]int32, 1000)
-
-	for i := range len(vec1) {
-		if vec1[i] > vec2[i] {
-			merged[i] = vec1[i]
-		} else {
-			merged[i] = vec2[i]
-		}
-	}
-
-	return merged
-}
-
-func (s *serverService) Chat(stream pb.ChatService_ChatServer) error {
+func (s *chatService) Chat(stream pb.ChatService_ChatServer) error {
 	var clientID int32
 
 	for {
@@ -94,18 +71,18 @@ func (s *serverService) Chat(stream pb.ChatService_ChatServer) error {
 	return nil
 }
 
-func (s *serverService) Join(req *pb.JoinRequest, stream pb.ChatService_ChatServer) error {
+func (s *chatService) Join(req *pb.JoinRequest, stream pb.ChatService_ChatServer) error {
 	clientID := req.ClientId
 	clientClock := req.VecClock.Clock
 
 	s.mu.Lock()
 	s.clients[clientID] = stream
-	s.clock = compare_clock(s.clock, clientClock)
+	s.clock = utils.CompareClocks(s.clock, clientClock)
 	s.mu.Unlock()
 
-	s.Inc_clock()
-	msg := fmt.Sprintf("CLIENT-%d joined chit-chat", clientID)
-	utils.LogMessage(-1, int(s.clock[0]), utils.SERVER, utils.JOIN, msg)
+	utils.IncreaseClock(s.clock, 0)
+	msg := fmt.Sprintf("Participant %d joined chit-chat at logical time %v", clientID, s.clock[0])
+	utils.LogMessage(-1, s.clock[0], utils.SERVER, utils.JOIN, msg)
 
 	vc := &pb.VectorClock{
 		Clock: s.clock,
@@ -119,18 +96,18 @@ func (s *serverService) Join(req *pb.JoinRequest, stream pb.ChatService_ChatServ
 	return nil
 }
 
-func (s *serverService) Leave(req *pb.LeaveRequest, stream pb.ChatService_ChatServer) error {
+func (s *chatService) Leave(req *pb.LeaveRequest, stream pb.ChatService_ChatServer) error {
 	clientID := req.ClientId
 	clientClock := req.VecClock.Clock
 
 	s.mu.Lock()
 	s.clients[clientID] = stream
-	s.clock = compare_clock(s.clock, clientClock)
+	s.clock = utils.CompareClocks(s.clock, clientClock)
 	s.mu.Unlock()
 
-	s.Inc_clock()
-	msg := fmt.Sprintf("CLIENT-%d left Chit Chat", clientID)
-	utils.LogMessage(-1, int(s.clock[0]), utils.SERVER, utils.LEAVE, msg)
+	utils.IncreaseClock(s.clock, 0)
+	msg := fmt.Sprintf("Participant %d left Chit Chat at logical time %v", clientID, s.clock[0])
+	utils.LogMessage(-1, s.clock[0], utils.SERVER, utils.LEAVE, msg)
 
 	vc := &pb.VectorClock{
 		Clock: s.clock,
@@ -150,19 +127,19 @@ func (s *serverService) Leave(req *pb.LeaveRequest, stream pb.ChatService_ChatSe
 	return nil
 }
 
-func (s *serverService) Message(req *pb.SendMessage, stream pb.ChatService_ChatServer) error {
+func (s *chatService) Message(req *pb.SendMessage, stream pb.ChatService_ChatServer) error {
 	clientID := req.ClientId
 	msg := req.Message
 	clientClock := req.VecClock.Clock
 
 	s.mu.Lock()
 	s.clients[clientID] = stream
-	s.clock = compare_clock(s.clock, clientClock)
+	s.clock = utils.CompareClocks(s.clock, clientClock)
 	s.mu.Unlock()
 
-	s.Inc_clock()
+	utils.IncreaseClock(s.clock, 0)
 	clientMessage := fmt.Sprintf("CLIENT-%d messaged: \"%s\"", clientID, msg)
-	utils.LogMessage(-1, int(s.clock[0]), utils.SERVER, utils.MESSAGE_SEND, clientMessage)
+	utils.LogMessage(-1, s.clock[0], utils.SERVER, utils.MESSAGE_SEND, clientMessage)
 
 	vc := &pb.VectorClock{
 		Clock: s.clock,
@@ -176,13 +153,11 @@ func (s *serverService) Message(req *pb.SendMessage, stream pb.ChatService_ChatS
 	return nil
 }
 
-func (s *serverService) broadcast(reply *pb.ServerReply, excludeID int32) {
+func (s *chatService) broadcast(reply *pb.ServerReply, excludeID int32) {
 	// Copy clients under lock to avoid holding the mutex while sending
 	s.mu.Lock()
 	clientsCopy := make(map[int32]pb.ChatService_ChatServer, len(s.clients))
-	for id, stream := range s.clients {
-		clientsCopy[id] = stream
-	}
+	maps.Copy(clientsCopy, s.clients)
 	s.mu.Unlock()
 
 	for id, clientStream := range clientsCopy {
@@ -190,9 +165,10 @@ func (s *serverService) broadcast(reply *pb.ServerReply, excludeID int32) {
 			continue
 		}
 
+		utils.IncreaseClock(s.clock, 0)
 		if err := clientStream.Send(reply); err != nil {
 			msg := fmt.Sprintf("Broadcast failed for CLIENT-%d: %v", id, err)
-			utils.LogMessage(-1, int(reply.VecClock.Clock[0]), utils.SERVER, utils.ERROR, msg)
+			utils.LogMessage(-1, s.clock[0], utils.SERVER, utils.ERROR, msg)
 
 			// Remove the broken client safely
 			s.mu.Lock()
@@ -203,11 +179,11 @@ func (s *serverService) broadcast(reply *pb.ServerReply, excludeID int32) {
 		}
 
 		msg := fmt.Sprintf("Broadcast delivered to CLIENT-%d: \"%s\"", id, reply.Ack)
-		utils.LogMessage(-1, int(reply.VecClock.Clock[0]), utils.SERVER, utils.BROADCAST, msg)
+		utils.LogMessage(-1, s.clock[0], utils.SERVER, utils.BROADCAST, msg)
 	}
 
 	msg := fmt.Sprintf("\"%s\"", reply.Ack)
-	utils.LogMessage(-1, int(reply.VecClock.Clock[0]), utils.SERVER, utils.BROADCAST, msg)
+	utils.LogMessage(-1, s.clock[0], utils.SERVER, utils.BROADCAST, msg)
 }
 
 func main() {
@@ -228,15 +204,15 @@ func main() {
 		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 		<-sigChan
 
-		utils.LogMessage(-1, -1, utils.SERVER, utils.SHUTDOWN, "Server shutting down gracefully...")
+		utils.IncreaseClock(server.clock, 0)
+		utils.LogMessage(-1, server.clock[0], utils.SERVER, utils.SHUTDOWN, "Server shutting down gracefully...")
 		grpcServer.GracefulStop()
 		lis.Close()
-		utils.LogMessage(-1, -1, utils.SERVER, utils.SHUTDOWN, "Completed")
-		os.Exit(0)
+		utils.LogMessage(-1, server.clock[0], utils.SERVER, utils.SHUTDOWN, "Completed")
 	}()
 
 	if err := grpcServer.Serve(lis); err != nil {
 		msg := fmt.Sprintf("Failed to serve: %v", err)
-		utils.LogMessage(-1, -1, utils.SERVER, utils.ERROR, msg)
+		utils.LogMessage(-1, server.clock[0], utils.SERVER, utils.ERROR, msg)
 	}
 }
