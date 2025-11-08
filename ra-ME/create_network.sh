@@ -20,6 +20,6 @@ if [[ $# == 0  || $# > 1 ]]
             done
 
             PEERS="${PEERS%,}"
-            (go run main.go $i $LOCAL_PORT $PEERS)
+            go run main.go $i $LOCAL_PORT $PEERS &
         done
 fi

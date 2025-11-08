@@ -6,9 +6,11 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
@@ -20,7 +22,7 @@ import (
 type node struct {
 	pb.UnimplementedNodeServiceServer
 	me, seq, highestSeq int32
-	awaitingReplies     int
+	awaitingReplies, criticalTimes int
 	reqCritical         bool
 	replyDeferred       map[int32]bool
 	mu                  sync.Mutex
@@ -50,14 +52,13 @@ func (node *node) startServer(port int) {
 		log.Fatalf("Failed to serve: %v", err)
 	}
 
-	/*
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-		<-sigChan
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	<-sigChan
 
-		grpcServer.GracefulStop()
-		lis.Close()
-	*/
+	grpcServer.GracefulStop()
+	lis.Close()
+	
 }
 
 func (node *node) connectToPeers(addresses []string) {
@@ -129,23 +130,22 @@ func (node *node) Request() {
 	log.Printf("[Node %d] Sending request with seq=%d", node.me, node.seq)
 
 	for id, client := range node.nodes_to_port {
-		go func(id int32, client pb.NodeServiceClient) {
-			reply, err := client.Node(context.Background(), req)
-			if err != nil {
-				log.Printf("[Node %d] Failed to contact Node %d: %v", node.me, id, err)
-				return
-			}
+		reply, err := client.Node(context.Background(), req)
+		if err != nil {
+			log.Printf("[Node %d] Failed to contact Node %d: %v", node.me, id, err)
+			return
+		}
 
-			if reply.Ack {
-				node.mu.Lock()
-				node.awaitingReplies--
-				node.mu.Unlock()
-				log.Printf("[Node %d] Received ACK from Node %d", node.me, id)
-			} else {
-				log.Printf("[Node %d] Node %d deferred", node.me, id)
-			}
-		}(id, client)
+		if reply.Ack {
+			node.mu.Lock()
+			node.awaitingReplies--
+			node.mu.Unlock()
+			log.Printf("[Node %d] Received ACK from Node %d", node.me, id)
+		} else {
+			log.Printf("[Node %d] Node %d deferred", node.me, id)
+		}
 	}
+	
 
 	node.enterCriticalSection()
 }
@@ -159,6 +159,9 @@ func (n *node) enterCriticalSection() {
 	}
 
 	log.Printf("[Node %d] Entering critical section", n.me)
+	n.mu.Lock()
+	n.criticalTimes++
+	n.mu.Unlock()
 	time.Sleep(2 * time.Second)
 
 	n.exitCriticalSection()
@@ -211,7 +214,6 @@ func main() {
 	// Create and start node
 	n := newNode(int32(nodeId))
 	go n.startServer(port)
-	fmt.Println("hello")
 
 	// Wait for all servers to be ready
 	time.Sleep(2 * time.Second)
@@ -220,13 +222,11 @@ func main() {
 	n.connectToPeers(peerAddresses)
 
 	go func() {
-		for {
-			time.Sleep(time.Duration(3+nodeId) * time.Second)
+		for n.criticalTimes <= 1 {
+			time.Sleep(1 * time.Second)
 			n.Request()
 		}
 	}()
 
 	select {}
-
-	//log.Printf("Node %d ready, dialing to ports: %v", nodeId, n.nodes_to_port)
 }
