@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+option go_package = "/pb";
+
+service NodeService {
+  rpc Node(Request) returns (Reply);
+}
+
+message Request {
+  int32 node_id = 1;
+  int32 sequence_n = 2;
+}
+
+message Reply {
+  bool ack = 1;
+}
