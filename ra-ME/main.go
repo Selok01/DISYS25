@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"os"
 	"os/signal"
@@ -39,14 +40,14 @@ func newNode(id int32) *node {
 
 // funcitons to start nodes
 
-func (node *node) startServer(port int) {
+func (n *node) startServer(port int) {
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 
 	grpcServer := grpc.NewServer()
-	pb.RegisterNodeServiceServer(grpcServer, node)
+	pb.RegisterNodeServiceServer(grpcServer, n)
 
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("Failed to serve: %v", err)
@@ -61,19 +62,19 @@ func (node *node) startServer(port int) {
 	
 }
 
-func (node *node) connectToPeers(addresses []string) {
+func (n *node) connectToPeers(addresses []string) {
 	for idx, addr := range addresses {
 		peerID := idx + 1
-		if peerID >= int(node.me) {
+		if peerID >= int(n.me) {
 			peerID++
 		}
 
-		conn := node.dialWithRetry(addr)
-		node.nodes_to_port[int32(peerID)] = pb.NewNodeServiceClient(conn) // storing the peers as "clients"
+		conn := n.dialWithRetry(addr)
+		n.nodes_to_port[int32(peerID)] = pb.NewNodeServiceClient(conn) // storing the peers as "clients"
 	}
 }
 
-func (node *node) dialWithRetry(addr string) *grpc.ClientConn {
+func (n *node) dialWithRetry(addr string) *grpc.ClientConn {
 	for range 3 {
 		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err == nil {
@@ -89,6 +90,14 @@ func (node *node) dialWithRetry(addr string) *grpc.ClientConn {
 //grpc sever handler
 
 func (n *node) Node(ctx context.Context, req *pb.Request) (*pb.Reply, error) {
+	if req.ForReplying {
+		n.mu.Lock()
+        n.awaitingReplies--
+        n.mu.Unlock()
+        log.Printf("[Node %d] Received deferred ACK from Node %d", n.me, req.NodeId)
+        return &pb.Reply{Ack: true}, nil
+	}
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -115,46 +124,49 @@ func (n *node) Node(ctx context.Context, req *pb.Request) (*pb.Reply, error) {
 
 // helper functions for the Ricard-Aggrawala algo
 
-func (node *node) shouldDefer(k int32, j int32) bool {
-	return node.reqCritical && ((k > node.highestSeq) || (k == node.seq && j > node.me))
+func (n *node) shouldDefer(k int32, j int32) bool {
+	return n.reqCritical && ((k > n.seq) || (k == n.seq && j > n.me))
 }
 
-func (node *node) Request() {
-	node.mu.Lock()
-	node.reqCritical = true
-	node.seq = node.highestSeq + 1
-	node.awaitingReplies = len(node.nodes_to_port)
-	req := &pb.Request{NodeId: node.me, SequenceN: node.seq}
-	node.mu.Unlock()
-
-	log.Printf("[Node %d] Sending request with seq=%d", node.me, node.seq)
-
-	for id, client := range node.nodes_to_port {
-		reply, err := client.Node(context.Background(), req)
-		if err != nil {
-			log.Printf("[Node %d] Failed to contact Node %d: %v", node.me, id, err)
-			return
-		}
-
-		if reply.Ack {
-			node.mu.Lock()
-			node.awaitingReplies--
-			node.mu.Unlock()
-			log.Printf("[Node %d] Received ACK from Node %d", node.me, id)
-		} else {
-			log.Printf("[Node %d] Node %d deferred", node.me, id)
-		}
+func (n *node) Request() {
+	n.mu.Lock()
+	n.reqCritical = true
+	n.seq = n.highestSeq + 1
+	n.awaitingReplies = len(n.nodes_to_port)
+	req := &pb.Request{
+		NodeId: n.me, 
+		SequenceN: n.seq,
+		ForReplying: false,
 	}
-	
+	n.mu.Unlock()
 
-	node.enterCriticalSection()
+	log.Printf("[Node %d] Sending request with seq=%d", n.me, n.seq)
+
+	var wg sync.WaitGroup
+	for id, client := range n.nodes_to_port {
+		wg.Add(1)
+		go func(id int32, client pb.NodeServiceClient) {
+			defer wg.Done()
+			reply, err := client.Node(context.Background(), req)
+			if err != nil {
+				log.Printf("[Node %d] Failed to contact Node %d: %v", n.me, id, err)
+				return
+			}
+			if reply.Ack {
+				n.mu.Lock()
+				n.awaitingReplies--
+				n.mu.Unlock()
+				log.Printf("[Node %d] Received ACK from Node %d", n.me, id)
+			}
+		}(id, client)
+	}
+	wg.Wait()
+
+	n.enterCriticalSection()
 }
 
 func (n *node) enterCriticalSection() {
-	for {
-		if n.awaitingReplies == 0 {
-			break
-		}
+	for n.awaitingReplies > 0 {
 		time.Sleep(100 * time.Millisecond)
 	}
 
@@ -194,6 +206,7 @@ func (n *node) Reply(target int32) {
 	_, err := client.Node(context.Background(), &pb.Request{
 		NodeId:    n.me,
 		SequenceN: n.highestSeq,
+		ForReplying: true,
 	})
 	if err != nil {
 		log.Printf("[Node %d] Failed to send reply to Node %d: %v", n.me, target, err)
@@ -222,8 +235,15 @@ func main() {
 	n.connectToPeers(peerAddresses)
 
 	go func() {
-		for n.criticalTimes <= 1 {
-			time.Sleep(1 * time.Second)
+		for {
+			n.mu.Lock()
+			if n.criticalTimes >= 1 {
+				n.mu.Unlock()
+				break
+			}
+			n.mu.Unlock()
+
+			time.Sleep(time.Duration(int32(rand.Intn(5)) + n.me) * time.Second)
 			n.Request()
 		}
 	}()
