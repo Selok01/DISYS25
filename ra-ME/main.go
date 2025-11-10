@@ -183,6 +183,8 @@ func (n *node) exitCriticalSection() {
 	n.mu.Lock()
 	n.reqCritical = false
 
+	log.Printf("[Node %d] Leaving critical section", n.me)
+
 	// Send replies to all deferred nodes
 	for j, deferred := range n.replyDeferred {
 		if deferred {
@@ -192,8 +194,6 @@ func (n *node) exitCriticalSection() {
 		}
 	}
 	n.mu.Unlock()
-
-	log.Printf("[Node %d] Leaving critical section", n.me)
 }
 
 func (n *node) Reply(target int32) {
