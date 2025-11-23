@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+option go_package = "/pb";
+
+// Server
+service AuctionService {
+  rpc Auction(ClientRequest) returns (ServerReply);
+}
+
+// ----------- Client → Server messages -----------
+message ClientRequest {
+  oneof payload {
+    BidRequest bid = 1;
+    ResultRequest result = 2;
+  }
+}
+
+message BidRequest {
+  int32 client_id = 1;
+  int32 amount = 2;
+}
+
+message ResultRequest {
+  int32 client_id = 1;
+}
+
+// ----------- Server → Client messages -----------
+message ServerReply {
+  string ack = 1;
+}
