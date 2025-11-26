@@ -8,7 +8,12 @@ run:
 kill-leader:
 	@echo "Killing Leader on port 50001..."
 	@kill -TERM $$(lsof -ti:50001)
-	@echo "Leader Killed, Follower replica should become new Leader"
+	@echo "Leader killed, Follower replica should become new Leader"
+
+kill-follower:
+	@echo "Killing Leader on port 50002..."
+	@kill -TERM $$(lsof -ti:50002)
+	@echo "Follower killed, nothing should change"
 
 clean: 
 	@echo "Cleaning up..."
