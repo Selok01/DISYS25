@@ -1,14 +1,18 @@
-.PHONY: run
+.PHONY: run kill-leader clean
 
 CLIENTS ?= 3
-SERVERS ?= 2
 
 run:
-	@bash -c 'cd servers && go run main.go 2>&1 & \
-		sleep 1; \
-		for i in $$(seq 1 $(CLIENTS)); do \
-			(cd clients && go run main.go 2>&1) & \
-			sleep 2; \
-		done; \
-		trap '"'"'kill -TERM $$(lsof -t -i:8080) 2>/dev/null'"'"' SIGINT; \
-		wait;' \
+	@bash -c './create_network.sh $(CLIENTS);'
+
+kill-leader:
+	@echo "Killing Leader on port 50001..."
+	@kill -TERM $$(lsof -ti:50001)
+	@echo "Leader Killed, Follower replica should become new Leader"
+
+clean: 
+	@echo "Cleaning up..."
+	@kill -TERM $$(lsof -ti:50001) 2>/dev/null || true
+	@kill -TERM $$(lsof -ti:50002) 2>/dev/null || true
+	@rm -f ./servers/*.log ./clients/*.log
+	@echo "Cleanup complete"

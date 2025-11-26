@@ -5,17 +5,19 @@ option go_package = "/pb";
 // Server
 service AuctionService {
   rpc Auction(ClientRequest) returns (ServerReply);
+  rpc Replicate(ReplicationMessage) returns (Ack);
+  rpc Heartbeat(Ping) returns (Pong);
 }
 
 // ----------- Client → Server messages -----------
 message ClientRequest {
   oneof payload {
-    BidRequest bid = 1;
+    Bidder bid = 1;
     ResultRequest result = 2;
   }
 }
 
-message BidRequest {
+message Bidder {
   int32 client_id = 1;
   int32 amount = 2;
 }
@@ -28,3 +30,20 @@ message ResultRequest {
 message ServerReply {
   string ack = 1;
 }
+
+// ----------- Server → Server messages -----------
+message ReplicationMessage {
+  int32 highest_bid = 1;
+  int32 highest_bidder = 2;
+  int32 round = 3;
+  bool over = 4;
+  repeated Bidder bidders = 5;
+}
+
+message Ack {
+  bool success = 1;
+}
+
+message Ping {}
+
+message Pong {}
